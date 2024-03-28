@@ -33,9 +33,6 @@ arguments
     event_number {isinteger,mustBePositive} = 1
 end
 
-% marker number is one less than input event number: M = E-1;
-marker_number = event_number-1;
-
 dataq_obj = dataqlibrary.open_dataq_file(wdq_file_name);
 sampleRate = dataq_obj.Header.SampleRate;
 current_marker = dataq_obj.Marks(event_number);
@@ -105,7 +102,7 @@ Marker_Start_Sample = round(seconds(mrk_data.Time)*sr);
 WWB_NArray = NET.createArray('System.Double', WWBSamplesSelected);
 wdqFileSeekOrigin = System.IO.SeekOrigin.Begin;
 try
-    sample_loc = dataq_obj.Seek(Marker_Start_Sample,wdqFileSeekOrigin);
+    sample_loc = dataq_obj.Seek(Marker_Start_Sample,wdqFileSeekOrigin); %#ok<NASGU>
 catch ME
     warning('Cannot seek file position.');
     throw(ME)
