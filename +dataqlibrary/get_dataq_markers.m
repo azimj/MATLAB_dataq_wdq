@@ -1,4 +1,4 @@
-function data_table = get_dataq_markers(varargin)
+function data_table = get_dataq_markers(wdq_file_name, event_number)
 %READ_DATAQ_FILE Reads recorded data from a dataq WDQ file
 %   recorded_data = read_dataq_file(wdq_file_name,event_number)
 %
@@ -20,28 +20,57 @@ function data_table = get_dataq_markers(varargin)
 
 % Azim Jinha 2020-01-24
 
+% 2024-03-28
+% * removed inputParser in favor of `arguments` block
+% * update to use wdq .NET library directly
+
 %% Parse inputs:
-input_parser=inputParser;
-input_parser.addRequired('wdq_file_name',@isfile);
-input_parser.parse(varargin{:});
-wdq_file_name = input_parser.Results.wdq_file_name;
+arguments
+    wdq_file_name {mustBeFile}
+    event_number {mustBeInteger} = -1
+end
 
-dataq_obj = open_dataq_file(wdq_file_name);
-sampleRate = dataq_obj.sampleRate;
+dataq_obj = dataqlibrary.open_dataq_file(wdq_file_name);
+sampleRate = dataq_obj.Header.SampleRate;
 
-marker_count = double(dataq_obj.markerCount);
-channel_count = double(dataq_obj.channelCount);
+marker_count = double(dataq_obj.Marks.Length);
+channel_count = double(dataq_obj.Header.Channels);
 
-for marker_number=0:marker_count-1
-    event_number = marker_number+1;
-    markerData(event_number).event_number = event_number;
-    markerData(event_number).duration = dataq_obj.markerDuration(marker_number);
-    current_marker = dataq_obj.markers(marker_number);
+%% initialize output table
+markerData_struct(marker_count) = struct(...
+    'EventTimes',   seconds(0), ...
+    'EventLabels', "", ...
+    'Comment',     "", ...
+    'EventEnds',    seconds(-1), ...
+    'EventNumber', 0);
+
+%% Loop over Marks collecting comments
+for iMark=1:marker_count
+    
+    current_marker = dataq_obj.Marks(iMark);
     current_sample = double(current_marker.Sample);
     start_time_samples = current_sample/channel_count;
-    start_time_secs = seconds(start_time_samples/dataq_obj.sampleRate);
-    markerData(event_number).start_time = start_time_secs;
-    markerData(event_number).comment = string(dataq_obj.comment(marker_number));
+    start_time_secs = seconds(start_time_samples/sampleRate);
+
+    % if last mark use end of file sample for duration
+    if iMark < marker_count
+        next_mark_sample = double(dataq_obj.Marks(iMark+1).Sample);
+    else
+        next_mark_sample = double(dataq_obj.Header.DataSize_) /2;
+    end
+
+    end_time_sample = next_mark_sample/channel_count;
+    end_time_secs = seconds(end_time_sample/sampleRate);
+
+    markerData_struct(iMark).EventLabels = string(num2str(iMark,'Event %03d'));
+    markerData_struct(iMark).EventTimes = start_time_secs;
+    markerData_struct(iMark).EventEnds = end_time_secs;
+    markerData_struct(iMark).EventNumber = iMark;
+    cmt = string(dataq_obj.Marks(iMark).Comment);
+    if isempty(cmt)
+        cmt="";
+    end
+    markerData_struct(iMark).Comment = cmt;
 end
 %% Get start time based on sample count (SC) , number of channels (N), and sample rate (SR)
 % T = (SC/(N*SR))
@@ -49,8 +78,20 @@ end
 %    N: number of channels. The samples are divided into each sample
 %   SR: sample rate in Hz (1/s).
 
-data_table = struct2table(markerData);
+% data_table = struct2table(markerData);
+tbl = struct2table(markerData_struct);
+tbl.Comment = string(tbl.Comment);
 
-
+el = tbl.Comment;
+ev_ends = tbl.EventEnds;
+ev_times = tbl.EventTimes;
+tbl =tbl(:,"EventNumber");
+ttt = table2timetable(tbl,"RowTimes",ev_times);
+data_table = eventtable(ttt, ...
+    "EventEnds",ev_ends, ...
+    "EventLabels",el);
+if event_number>0
+    data_table = data_table(event_number,:);
+end
 end
 

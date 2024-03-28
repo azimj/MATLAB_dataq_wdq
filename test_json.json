@@ -1,0 +1,6 @@
+{
+    "string_var": "string",
+    "scalar": 1,
+    "row_vec": [[1,2,3,4]],
+    "col_vec": [1,2,3,4]
+}

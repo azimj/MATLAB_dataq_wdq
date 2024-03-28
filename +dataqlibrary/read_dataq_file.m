@@ -1,4 +1,4 @@
-function data_table = read_dataq_file(varargin)
+function data_table = read_dataq_file(wdq_file_name, event_number)
 %READ_DATAQ_FILE Reads recorded data from a dataq WDQ file
 %   recorded_data = read_dataq_file(wdq_file_name,event_number)
 %
@@ -23,52 +23,105 @@ function data_table = read_dataq_file(varargin)
 
 % Azim Jinha 2020-01-22
 
+%2024-03-28 updates
+% * Use `arguments` block instead of inputParser
+% * Use Dataq's WDQ .NET library directly
+
 %% Parse inputs:
-input_parser=inputParser;
-input_parser.addRequired('wdq_file_name',@isfile);
-input_parser.addOptional('event_number',1,@(numb) numb>=1);
-input_parser.parse(varargin{:});
-wdq_file_name = input_parser.Results.wdq_file_name;
+arguments
+    wdq_file_name {mustBeFile}
+    event_number {isinteger,mustBePositive} = 1
+end
 
 % marker number is one less than input event number: M = E-1;
-event_number = input_parser.Results.event_number;
 marker_number = event_number-1;
 
-dataq_obj = open_dataq_file(wdq_file_name);
-sampleRate = dataq_obj.sampleRate;
-current_marker = dataq_obj.markers(marker_number);
+dataq_obj = dataqlibrary.open_dataq_file(wdq_file_name);
+sampleRate = dataq_obj.Header.SampleRate;
+current_marker = dataq_obj.Marks(event_number);
 
 %% Get start time based on sample count (SC) , number of channels (N), and sample rate (SR)
 % T = (SC/(N*SR))
 %   SC: marker starts at the total number of samples for all channels
 %    N: number of channels. The samples are divided into each sample
 %   SR: sample rate in Hz (1/s).
-channel_count = double(dataq_obj.channelCount);
+channel_count = double(dataq_obj.Header.Channels);
 current_sample = double(current_marker.Sample);
 start_time_samples = current_sample/channel_count;
-start_time_secs = seconds(start_time_samples/dataq_obj.sampleRate);
+start_time_secs = seconds(start_time_samples/sampleRate);
 
 % readMarkerData returns a System.Double[,] array
 % use 'double' to convert to a MATLAB double matrix
-wdq_data = dataq_obj.readMarkerData(marker_number); 
-matlab_data = double(wdq_data);
+marker_comment = dataqlibrary.get_dataq_markers(wdq_file_name,event_number);
+matlab_data = extract_channel_data(dataq_obj, marker_comment);
 
-%% Create output time table
-channel_names = string(dataq_obj.channelNames);
+
+%% Get Channel Name
+channel_names(channel_count) = "";
+channel_units(channel_count) = "";
 for i=1:length(channel_names)
-    if channel_names(i).strlength==0
-        channel_names(i)=replace(channel_names(i),"","Var" + string(num2str(i,'%02d')));
+    chn = string(dataq_obj.Channels(i).Annotation);
+    if strlength(chn)==0
+        chn=string(num2str(i,'chan_%02d'));
     end
+    channel_names(i) = chn;
+
+    ch_u = string(dataq_obj.Channels(i).Units);
+    if strlength(ch_u) == 0
+        ch_u = "Unknown";
+    end
+    channel_units(i) = ch_u;
+
 end
+
+
+%% Create data table
 data_table = array2timetable(matlab_data,'SampleRate',sampleRate,'StartTime',start_time_secs, ...
     'VariableNames',channel_names);
-marker_comment = string(dataq_obj.comment(marker_number));
+data_table.Properties.VariableUnits = channel_units;
+
+
 if ~isempty(marker_comment)
-    data_table.Properties.Description = marker_comment;
-end
-data_table.Properties.UserData.source_file = wdq_file_name;
-data_table.Properties.UserData.event_number = event_number;
-data_table.Properties.UserData.marker_number = marker_number;
-data_table.Properties.UserData.Comment = marker_comment;
+    data_table.Properties.Description = marker_comment.EventLabels;
+    data_table.Properties.UserData.Comment = marker_comment.EventLabels;
 end
 
+data_table.Properties.UserData.source_file = wdq_file_name;
+data_table.Properties.UserData.event_number = event_number;
+
+end
+
+
+
+function f_data = extract_channel_data(dataq_obj,mrk_data)
+
+sr = double(dataq_obj.Header.SampleRate);
+ev_duration = seconds(mrk_data.EventEnds - mrk_data.Time);
+channel_count = double(dataq_obj.Header.Channels);
+row_count = round(ev_duration * sr);
+WWBSamplesSelected = row_count * channel_count;
+Marker_Start_Sample = round(seconds(mrk_data.Time)*sr);
+
+WWB_NArray = NET.createArray('System.Double', WWBSamplesSelected);
+wdqFileSeekOrigin = System.IO.SeekOrigin.Begin;
+try
+    sample_loc = dataq_obj.Seek(Marker_Start_Sample,wdqFileSeekOrigin);
+catch ME
+    warning('Cannot seek file position.');
+    throw(ME)
+end
+
+try
+    dataq_obj.ReadEu(WWB_NArray, WWBSamplesSelected);
+catch ME
+    disp("***********")
+    disp("Failed to read data from WDQ file at marker: " + mrk_data.EventLabels)
+    disp("***********")
+    throw(ME);
+end
+
+f_data = reshape(double(WWB_NArray),channel_count,[])';
+
+
+
+end
